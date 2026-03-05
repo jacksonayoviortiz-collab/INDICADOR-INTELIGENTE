@@ -13,6 +13,6 @@ joblib==1.4.2
 python-dotenv==1.0.1
 streamlit-autorefresh==1.0.1
 rich<14
-# Librería IQ Option oficial de la comunidad
--e git+https://github.com/iqoptionapi/iqoptionapi.git#egg=iqoptionapi
+# LIBRERIA IQ OPTION CORRECTA Y FUNCIONAL
+py-iqoption-api==1.1.4
 websocket-client==0.56.0
