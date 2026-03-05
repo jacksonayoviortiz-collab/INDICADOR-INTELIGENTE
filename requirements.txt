@@ -14,5 +14,5 @@ python-dotenv==1.0.1
 streamlit-autorefresh==1.0.1
 rich<14
 # LIBRERIA IQ OPTION CORRECTA Y FUNCIONAL
-py-iqoption-api==1.1.4
-websocket-client==0.56.0
+pyiqoptionapi==0.1.8
+websocket-client==1.6.4
