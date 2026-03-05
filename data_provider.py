@@ -1,146 +1,162 @@
-"""
-data_provider.py
-
-Clase AlphaVantageConnector para conectarse a la API de Alpha Vantage y obtener datos de Forex.
-Recibe la API Key del usuario como argumento (desde la interfaz de Streamlit).
-Proporciona métodos para obtener velas de un par de divisas.
-Incluye manejo de errores y enlaces para obtener API Key gratuita.
-"""
-
-import requests
-import pandas as pd
-import logging
-from typing import Optional, List
+import random
+import statistics
 from datetime import datetime, timedelta
-import time
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-class AlphaVantageConnector:
+# ------------------------------------------------
+# SIMULADOR DE DATOS (para pruebas)
+# Reemplaza esta función con tu conexión real a broker/API
+# ------------------------------------------------
+def get_current_vela():
     """
-    Cliente para la API de Alpha Vantage.
-    Documentación: https://www.alphavantage.co/documentation/
+    Simula la obtención de la última vela de 1 minuto.
+    Devuelve un diccionario con:
+        - open: precio de apertura
+        - high: máximo
+        - low: mínimo
+        - close: precio de cierre
+        - volume: volumen (ticks)
+        - timestamp: datetime de la vela (inicio del minuto)
     """
+    now = datetime.now().replace(second=0, microsecond=0)
+    # Generar datos aleatorios con cierta tendencia para pruebas
+    base = 100 + random.uniform(-2, 2)
+    open_price = base
+    close_price = base + random.uniform(-1.5, 1.5)
+    high_price = max(open_price, close_price) + random.uniform(0, 0.5)
+    low_price = min(open_price, close_price) - random.uniform(0, 0.5)
+    volume = random.randint(100, 1000)
+    return {
+        'open': open_price,
+        'high': high_price,
+        'low': low_price,
+        'close': close_price,
+        'volume': volume,
+        'timestamp': now
+    }
 
-    BASE_URL = "https://www.alphavantage.co/query"
+def get_historical_velas(minutes=20):
+    """
+    Devuelve una lista de las últimas 'minutes' velas (simuladas).
+    """
+    velas = []
+    now = datetime.now().replace(second=0, microsecond=0)
+    for i in range(minutes, 0, -1):
+        ts = now - timedelta(minutes=i)
+        # Simular datos coherentes (con tendencia aleatoria)
+        base = 100 + (i * 0.01) + random.uniform(-1, 1)
+        open_price = base
+        close_price = base + random.uniform(-1, 1)
+        high_price = max(open_price, close_price) + random.uniform(0, 0.3)
+        low_price = min(open_price, close_price) - random.uniform(0, 0.3)
+        volume = random.randint(100, 1000)
+        velas.append({
+            'open': open_price,
+            'high': high_price,
+            'low': low_price,
+            'close': close_price,
+            'volume': volume,
+            'timestamp': ts
+        })
+    return velas
 
-    def __init__(self, access_token: str):
-        """
-        Inicializa el conector con el token de acceso del usuario.
+# ------------------------------------------------
+# CÁLCULOS TÉCNICOS
+# ------------------------------------------------
+def calcular_medias(velas):
+    """
+    Calcula medias de cuerpo y volumen de las últimas 5 velas.
+    """
+    ultimas5 = velas[-5:]
+    cuerpos = [abs(v['close'] - v['open']) for v in ultimas5]
+    volumenes = [v['volume'] for v in ultimas5]
+    cuerpo_medio = statistics.mean(cuerpos) if cuerpos else 0
+    volumen_medio = statistics.mean(volumenes) if volumenes else 0
+    return cuerpo_medio, volumen_medio
 
-        Args:
-            access_token: API Key personal de Alpha Vantage.
-        """
-        self.access_token = access_token
-        self.session = requests.Session()
+def detectar_trampa(vela_actual, velas_anteriores):
+    """
+    Detecta trampas de liquidez (falsos rompimientos).
+    Retorna un string con el tipo de trampa o None.
+    """
+    if len(velas_anteriores) < 10:
+        return None
+    maximos = [v['high'] for v in velas_anteriores[-10:]]
+    minimos = [v['low'] for v in velas_anteriores[-10:]]
+    max_reciente = max(maximos)
+    min_reciente = min(minimos)
 
-    def _make_request(self, params: dict) -> Optional[dict]:
-        """
-        Realiza una petición GET a la API de Alpha Vantage y maneja errores comunes.
-        """
-        params['apikey'] = self.access_token
-        try:
-            response = self.session.get(self.BASE_URL, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+    alta = vela_actual['high']
+    baja = vela_actual['low']
+    cierre = vela_actual['close']
 
-            # Alpha Vantage devuelve un JSON con 'Error Message' o 'Note' si hay problemas
-            if "Error Message" in data:
-                logging.error(f"Error de Alpha Vantage: {data['Error Message']}")
-                return {"error": "API_ERROR", "detail": data['Error Message']}
-            if "Note" in data:
-                logging.warning(f"Nota de Alpha Vantage: {data['Note']}")
-                # Si es un límite de tasa, lo manejamos como un error específico
-                if "API call frequency" in data['Note']:
-                    return {"error": "RATE_LIMIT", "detail": data['Note']}
-                return {"error": "API_NOTE", "detail": data['Note']}
+    # Trampa alcista: rompe máximo pero cierra por debajo
+    if alta > max_reciente and cierre < max_reciente:
+        return "ALCISTA (falso breakout) → señal de VENTA"
+    # Trampa bajista: rompe mínimo pero cierra por encima
+    if baja < min_reciente and cierre > min_reciente:
+        return "BAJISTA (falso breakout) → señal de COMPRA"
+    return None
 
-            return data
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 401:
-                logging.error("Error 401: API Key inválida o no autorizada.")
-                return {"error": "API_KEY_INVALIDA"}
-            else:
-                logging.error(f"Error HTTP {response.status_code}: {e}")
-                return {"error": f"HTTP_{response.status_code}"}
-        except requests.exceptions.ConnectionError:
-            logging.error("Error de conexión: No se pudo conectar con Alpha Vantage.")
-            return {"error": "CONNECTION_ERROR"}
-        except requests.exceptions.Timeout:
-            logging.error("Timeout: La petición tardó demasiado.")
-            return {"error": "TIMEOUT"}
-        except Exception as e:
-            logging.error(f"Error inesperado: {e}")
-            return {"error": "UNKNOWN"}
+def calcular_probabilidad_y_fuerza(vela_actual, velas_anteriores):
+    """
+    Calcula probabilidad de compra y venta, y la fuerza (0-1).
+    Retorna (prob_compra, prob_venta, fuerza)
+    """
+    cuerpo_medio, volumen_medio = calcular_medias(velas_anteriores)
 
-    def obtener_velas(self, from_symbol: str, to_symbol: str, interval: str = "5min") -> Optional[pd.DataFrame]:
-        """
-        Obtiene velas (candlesticks) para un par de divisas.
+    cuerpo_actual = abs(vela_actual['close'] - vela_actual['open'])
+    rango_actual = vela_actual['high'] - vela_actual['low']
+    sombra_sup = vela_actual['high'] - max(vela_actual['open'], vela_actual['close'])
+    sombra_inf = min(vela_actual['open'], vela_actual['close']) - vela_actual['low']
 
-        Args:
-            from_symbol: Ej. "EUR"
-            to_symbol: Ej. "USD"
-            interval: Resolución de las velas. Valores: "1min", "5min", "15min", "30min", "60min".
+    # Inicializar probabilidades
+    prob_compra = 0
+    prob_venta = 0
 
-        Returns:
-            DataFrame con columnas: datetime, open, high, low, close.
-            Si hay error, retorna None.
-        """
-        params = {
-            "function": "FX_INTRADAY",
-            "from_symbol": from_symbol,
-            "to_symbol": to_symbol,
-            "interval": interval,
-            "outputsize": "compact",  # Las últimas 100 velas
-            "datatype": "json"
-        }
+    # 1. Impulso por cuerpo grande
+    if cuerpo_actual > cuerpo_medio * 1.5:
+        if vela_actual['close'] > vela_actual['open']:  # vela alcista
+            prob_compra += 30
+        else:
+            prob_venta += 30
 
-        data = self._make_request(params)
+    # 2. Cierre vs apertura anterior
+    if len(velas_anteriores) >= 1:
+        vela_prev = velas_anteriores[-1]
+        if vela_actual['close'] > vela_prev['open']:
+            prob_compra += 20
+        elif vela_actual['close'] < vela_prev['open']:
+            prob_venta += 20
 
-        if data is None or "Time Series FX" not in data:
-            if data and data.get("error") == "API_KEY_INVALIDA":
-                logging.error("API Key inválida al obtener velas.")
-            return None
+    # 3. Sombras
+    if sombra_inf > sombra_sup:
+        prob_compra += 20
+    elif sombra_sup > sombra_inf:
+        prob_venta += 20
 
-        # La clave tiene un formato como "Time Series FX (5min)"
-        time_series_key = f"Time Series FX ({interval})"
-        series = data.get(time_series_key, {})
+    # 4. Volumen
+    if vela_actual['volume'] > volumen_medio:
+        if vela_actual['close'] > vela_actual['open']:
+            prob_compra += 30
+        else:
+            prob_venta += 30
+    else:
+        # Volumen bajo, pero si el cuerpo es grande, puede ser manipulación
+        if cuerpo_actual > cuerpo_medio * 2:
+            # Podría ser manipulación, pero no aumentamos probabilidad
+            pass
 
-        if not series:
-            logging.error(f"No se encontraron datos para el intervalo {interval}.")
-            return None
+    # Normalizar a porcentajes (que sumen 100)
+    total = prob_compra + prob_venta
+    if total > 0:
+        prob_compra = (prob_compra / total) * 100
+        prob_venta = (prob_venta / total) * 100
+    else:
+        prob_compra = 50
+        prob_venta = 50
 
-        records = []
-        for timestamp, values in series.items():
-            records.append({
-                "datetime": timestamp,
-                "open": float(values["1. open"]),
-                "high": float(values["2. high"]),
-                "low": float(values["3. low"]),
-                "close": float(values["4. close"])
-            })
+    # Calcular fuerza (un valor entre 0 y 1 basado en la claridad de la señal)
+    # Usamos la diferencia absoluta entre probabilidades normalizada
+    fuerza = abs(prob_compra - prob_venta) / 100.0  # 0 si iguales, 1 si 100% vs 0%
 
-        df = pd.DataFrame(records)
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-        df.sort_index(inplace=True)
-        return df
-
-    def obtener_par_ejemplo(self) -> tuple:
-        """Devuelve un par de ejemplo para probar la conexión."""
-        return ("EUR", "USD")
-
-    @staticmethod
-    def obtener_instrucciones_api_key() -> str:
-        """
-        Devuelve un texto con instrucciones y enlace para obtener una API Key gratuita de Alpha Vantage.
-        """
-        return (
-            "🔑 **Para usar este indicador, necesitas una API Key gratuita de Alpha Vantage.**\n\n"
-            "1. **Regístrate** en este enlace (es inmediato):\n"
-            "   👉 [https://www.alphavantage.co/support/#api-key](https://www.alphavantage.co/support/#api-key)\n"
-            "2. Llena el formulario con tu nombre, email y sitio web.\n"
-            "3. **Recibirás tu API Key por email** en menos de 1 minuto (revisa spam).\n"
-            "4. Pega el token en el campo de abajo y listo.\n\n"
-            "*(La API Key es gratuita y te permite 5 llamadas por minuto, perfecto para empezar.)*"
-        )
+    return prob_compra, prob_venta, fuerza
